@@ -1,0 +1,217 @@
+RAG PROJECT — PHASE 1, 2 & 3 WORKFLOW
+Indian Govt Schemes & Policy Assistant
+Last updated: 26 July 2026
+
+=====================================
+STEP 0: PROJECT SETUP (done)
+=====================================
+- Created project folder: rag-govt-schemes
+- Created virtual environment: venv
+- Activated venv, installed packages:
+  pip install pypdf chromadb openai streamlit python-dotenv
+
+- path is for file handing
+- json to save final data
+- pdfReader (import from pypdf) open pdfs
+
+REMINDER: activate venv every new terminal session before running
+anything: venv\Scripts\activate (should see "(venv)" in prompt)
+
+=====================================
+STEP 1: DOCUMENT COLLECTION (done)
+=====================================
+Documents placed in /data folder:
+- PMKISAN.pdf     -> PM-KISAN farmer income support scheme
+- MUDRA.pdf       -> PM Mudra Yojana (business loans)
+- PMKVY.pdf       -> Skill India training scheme
+- LBY.pdf         -> Ladli Behna Yojana
+- Angikaar.pdf    -> PM Awas Yojana (housing)
+- PMCG.pdf        -> PM GatiShakti + National Logistics Policy
+- FCRA_2010.pdf   -> Foreign Contribution Regulation Act (NGO compliance)
+- IT.pdf          -> Government IT/digital governance policy
+
+(Dropped: CAA.pdf, Petrol.pdf — kept out for project focus/neutrality)
+
+=====================================
+STEP 2: TEXT EXTRACTION + CHUNKING (done)
+=====================================
+Script: extract_and_chunk.py
+
+What it does (NO AI involved — pure Python):
+1. extract_pages() -> opens each PDF with pypdf,
+   pulls text page by page, returns (page_number, text) pairs
+2. chunk_text() -> slices each page's text into ~2000-character
+   pieces with 200-character overlap (so sentences at cut points
+   aren't lost), skips tiny leftover pieces under 100 chars
+3. Main loop -> loops through every PDF in /data, then every page
+   in that PDF, chunks each page, collects everything into one
+   big list: all_chunks
+4. Saves final result as chunks.json -> a structured dataset:
+   [{ "text": "...", "source": "pmkisan", "page": 3 }, ...]
+
+Known limitation (not fixed yet, noted for later):
+- Chunking resets per page, so a sentence that spans a page
+  boundary (end of page 1 -> start of page 2) may get cut
+  without overlap protection. Fix = join all pages into one
+  continuous string before chunking. Deferred until Phase 1
+  basic pipeline is confirmed working.
+
+Result: 294 chunks generated across all documents (after FCRA
+replacement and clean rebuild).
+
+=====================================
+STEP 3: EMBEDDINGS + VECTOR STORE (done)
+=====================================
+Script: build_vectorstore.py
+
+What it does (AI enters the pipeline here):
+1. Loads API key from .env (python-dotenv) — key never in code,
+   .env added to .gitignore
+2. Loads chunks.json
+3. Batches chunks (50 at a time), sends each batch to OpenAI
+   text-embedding-3-small -> each chunk becomes a vector
+   (list of numbers capturing its MEANING)
+4. Stores in ChromaDB (PersistentClient, ./chroma_db folder):
+   id + vector + original text + metadata (source, page) together
+5. Why: similar-meaning chunks get similar vectors, so a question
+   can be matched to relevant chunks by comparing numbers —
+   turns "understanding language" into fast math
+
+Cost: entire embedding run < $0.01
+
+REMINDER: if chunks.json changes (docs added/removed/re-chunked),
+DELETE the chroma_db folder before re-running this script. Old
+IDs + new IDs can mismatch and leave stale data otherwise.
+
+=====================================
+STEP 4: RETRIEVAL TESTING (done)
+=====================================
+Script: test_retrieval.py
+
+Flow: question -> embed with SAME model -> Chroma finds top-N
+closest chunk vectors -> prints chunks + source + page
+- This returns EVIDENCE, not answers. Answer generation is Phase 3.
+- Same embedding model for chunks and questions is mandatory
+  (different models = incomparable vectors)
+
+Verified: PM-KISAN eligibility question -> correct PMKISAN chunks
+(pages 3, 4, 5)
+
+=====================================
+STEP 5: ANSWER GENERATION (done)
+=====================================
+Script: ask.py
+
+What it does (closes the full RAG loop):
+1. retrieve_chunks(question, n_results=8) -> same embed + Chroma
+   query as test_retrieval.py, but each chunk gets tagged inline
+   with "[Source: X, Page: Y]" so the LLM can cite it later
+2. build_prompt(question, chunks) -> assembles retrieved chunks +
+   a 4-rule instruction block + the question into one prompt:
+   Rule 1: answer ONLY from provided context (blocks hallucination
+           mixing in outside/outdated knowledge)
+   Rule 2: cite every claim as (Source: X, Page: Y) (makes answers
+           verifiable, not just fluent)
+   Rule 3: say "I could not find this information in the available
+           documents" when the answer isn't in context (gives the
+           model explicit permission to refuse instead of guessing
+           — the single most important rule)
+   Rule 4: keep language simple, for a common citizen reader
+3. ask(question) -> sends the prompt to gpt-4o-mini at
+   temperature=0.2 (low randomness, factual/consistent over
+   creative) -> returns the final cited answer
+4. Interactive terminal loop: type a question, get an answer,
+   type 'exit' to quit
+
+Mental model: retrieval finds the evidence; the prompt is the
+contract that forces the model to use ONLY that evidence; the
+LLM just follows the contract.
+
+Verified test cases:
+- Mudra loan amounts -> correct categories + amounts, cited to
+  MUDRA page 9
+- Capital of France (out-of-scope) -> correctly refused: "I could
+  not find this information in the available documents"
+- FCRA registration conditions -> see lesson below
+
+=====================================
+PROBLEMS FACED + LESSONS LEARNED
+=====================================
+1. TYPOS (pydpdf, imprt) — small spelling errors crashed install
+   and imports. Lesson: read the LAST lines of error messages first.
+
+2. ModuleNotFoundError: openai — venv active but package missing.
+   Lesson: venv active != packages installed. Verify with pip.
+
+3. pypdf CRASH on malformed PDF (CAA) — some PDFs have broken
+   internal structure. Fix: try/except around extract_text() per
+   page so one bad page never kills the pipeline.
+   Lesson: production code must survive bad input.
+
+4. THE BIG ONE — SILENT INGESTION FAILURE (FCRA)
+   - FCRA question returned IT chunks. Checked chunks.json:
+     ZERO chunks from FCRA_2010 existed.
+   - Root cause: FCRA PDF was a SCANNED document (images of text,
+     no text layer). pypdf extracted nothing; the >100 char filter
+     silently discarded fragments; script still reported "success".
+   - Fix: downloaded clean digital version from indiacode.nic.in,
+     deleted chroma_db, re-chunked, re-embedded, re-tested the
+     same failing question -> all 3 results now from FCRA_2010,
+     correct sections (12, 16, 17).
+   - Lessons:
+     a) A RAG system can only answer from what SURVIVED ingestion
+     b) Ingestion failures are SILENT — verify data, not exit codes
+     c) Retrieval testing is how you discover data problems
+     d) Wrong-but-plausible results are more dangerous than
+        obvious errors (legal vocabulary overlap masked the gap)
+
+5. RETRIEVAL IS RANKING, NOT PASS/FAIL (FCRA conditions question)
+   - Asked "conditions for FCRA registration" with n_results=5.
+     Model correctly said "could not find this information" —
+     but the real condition list (Section 12(4), page 15) DID
+     exist in the vector store. It just ranked 6th, outside the
+     top 5 returned.
+   - Debugged by printing retrieved chunks before sending to LLM
+     (a habit worth keeping: always inspect the evidence, not just
+     the final answer, when something looks off).
+   - Fix: increased n_results from 5 to 8 -> page 15 chunk
+     surfaced -> model gave the correct, complete 12-point answer.
+   - Lessons:
+     a) "Not found" can mean "ranked too low," not "missing data" —
+        check ranking depth before assuming a data problem
+     b) The model's refusal (Rule 3) was CORRECT given what it was
+        shown — this was a retrieval fix, not a prompt fix
+     c) Answers synthesizing multiple facts from ONE page cite
+        fine with a single tag; answers pulling from MULTIPLE
+        pages will need per-claim citations — watch for this as
+        questions get more complex (not an issue yet, just noted)
+
+=====================================
+MOTIVE / WHY THIS PROJECT
+=====================================
+- Govt scheme documents are long, dense, hard for citizens to
+  read. This system: ask in plain language -> answer with exact
+  source + page cited. Verifiable, not hallucinated.
+- Personal: learn production-style RAG hands-on (ingestion,
+  embeddings, vector search, prompt design, debugging) as a
+  portfolio project for data science / AI roles.
+
+=====================================
+COST TRACKING (running total, rough)
+=====================================
+- Embedding 294 chunks: < $0.01
+- Testing/dev queries so far (~30-40 calls, mix of embedding +
+  gpt-4o-mini): well under $0.50
+- $10 OpenAI credit: effectively untouched, no action needed
+
+=====================================
+NEXT: STREAMLIT UI (not started)
+=====================================
+- app.py: wrap ask() in a simple Streamlit interface
+  - chat input box for the question
+  - display the answer
+  - expandable "Sources" section showing which chunks were used
+- Then: push to GitHub (clean structure, README, requirements.txt,
+  confirm .env is gitignored before pushing)
+- Deploy on Streamlit Community Cloud (free, gives public link)
+- LinkedIn post with working demo link

@@ -1,0 +1,171 @@
+CONCEPTS LEARNED — RAG PROJECT
+Personal reference notes (not a progress log — see steps.txt for that)
+
+=====================================
+1. CHUNKING
+=====================================
+- Long documents are split into small overlapping pieces (~2000
+  chars) because searching one giant document is imprecise and
+  wasteful. Small focused pieces = better matches later.
+- Overlap (~200 chars) exists so a sentence sitting right at a
+  cut point doesn't get sliced in half and lose meaning.
+- Limitation I found: chunking resets per page in my current
+  script, so a sentence spanning a page boundary isn't protected
+  by overlap. Fix = chunk the whole document as one continuous
+  string, not page by page. (Not fixed yet, noted for later.)
+
+=====================================
+2. EMBEDDINGS (this is where AI enters the pipeline)
+=====================================
+- An embedding = converting a piece of text into a list of
+  numbers (a vector) that represents its MEANING, not its exact
+  words.
+- I use OpenAI's text-embedding-3-small model. Every vector it
+  produces is exactly 1536 numbers long — this number is fixed
+  by the model, same for every chunk, always.
+- Analogy: a vector is like a coordinate. Lat/long is a 2D
+  coordinate. An embedding is a coordinate too, just in
+  1536-dimensional space instead of 2D. Each chunk = one point
+  floating somewhere in that space, based on its meaning.
+- Chunks about similar topics end up as points that are close
+  together in that space. Chunks about unrelated topics end up
+  far apart.
+- IMPORTANT: the SAME embedding model must be used for both the
+  stored chunks AND the incoming question. Different models
+  produce vectors that aren't comparable to each other — like
+  comparing inches to centimeters without converting.
+
+=====================================
+3. VECTOR DATABASE (ChromaDB)
+=====================================
+- A normal database stores rows and columns. A vector database
+  is built to answer one specific question fast: "which stored
+  points are closest to THIS point?"
+- Each entry I store = 4 things bundled together:
+  id, embedding (the 1536 numbers), document (original text),
+  metadata (source + page)
+- PersistentClient means it saves to a folder on disk
+  (./chroma_db), not just memory — survives closing the terminal.
+- If the underlying chunks.json changes, the old chroma_db
+  should be deleted before rebuilding, or IDs can mismatch.
+
+=====================================
+4. RETRIEVAL = COSINE SIMILARITY
+=====================================
+- When I ask a question, it gets embedded into its own vector,
+  the same way chunks were.
+- Chroma compares that question-vector against every stored
+  chunk-vector using cosine similarity — basically measuring
+  how close in "direction" two vectors are in that 1536-dim
+  space.
+- The closest N vectors are returned as the most relevant chunks.
+- KEY LESSON: retrieval is a ranking problem, not a pass/fail
+  lookup. The right chunk can exist in the database and still
+  not get returned if it's ranked outside the top N requested.
+  ("Not found" doesn't always mean "not in the database.")
+
+=====================================
+5. GENERATION (LLM answering from retrieved evidence)
+=====================================
+- Retrieval finds evidence (raw text chunks). It does NOT
+  produce an answer by itself — that's a separate step.
+- The retrieved chunks + the question + a set of rules get
+  combined into one big prompt, sent to gpt-4o-mini.
+- The LLM has zero memory between calls — every single call has
+  to include everything it needs, fresh, every time (it doesn't
+  "remember" earlier chunks or rules unless I include them again).
+- temperature controls randomness. Low (0.2) = stick close to
+  facts, don't get creative. Right choice for factual/legal
+  content.
+
+=====================================
+6. PROMPT DESIGN — THE 4 RULES (this is the real skill here)
+=====================================
+- Rule: answer ONLY from provided context
+  -> stops the model blending in outside/possibly wrong knowledge
+- Rule: cite every claim with source + page
+  -> turns "an answer" into a VERIFIABLE answer
+- Rule: say "I could not find this information" if the answer
+  isn't present, instead of guessing
+  -> the single most important rule. Gives the model explicit
+  permission to refuse rather than hallucinate. Proven working
+  when I asked "capital of France" and it correctly refused.
+- Rule: keep language simple
+  -> matches the target user (a citizen, not a lawyer)
+
+=====================================
+7. SILENT FAILURES ARE THE MOST DANGEROUS KIND
+=====================================
+- A scanned PDF (images, no text layer) produced ZERO usable
+  chunks, but my script still printed "success" — no error, no
+  warning. I only found this by testing retrieval and noticing
+  the results were wrong.
+- Lesson: a system can run without errors and still be silently
+  broken. Never trust "it ran fine" as proof the data is correct
+  — always verify by testing actual output.
+
+=====================================
+8. GENERAL ENGINEERING HABITS PICKED UP
+=====================================
+- Read the LAST lines of an error message first — that's usually
+  where the actual problem is stated.
+- venv being active doesn't mean packages are installed — verify.
+- When debugging something that "should have worked," print the
+  intermediate data (e.g. what chunks were actually retrieved)
+  before assuming the final output is wrong — inspect evidence,
+  not just conclusions.
+- Editing a .py file does not update a script that's already
+  running — must stop and re-run for changes to take effect.
+
+=====================================
+9. EXPLORING: WHAT A STORED VECTOR ACTUALLY LOOKS LIKE
+=====================================
+- Wrote a one-off script (peek_vector.py) to look directly at
+  one saved chunk in chroma_db, using:
+  collection.get(ids=["chunk_0"], include=["embeddings",
+  "documents", "metadatas"])
+- No new embedding was created and no OpenAI call was made —
+  this just reads what build_vectorstore.py already saved to
+  disk. Proof that once embeddings exist, you don't need to call
+  the AI again just to inspect them.
+- What came back for chunk_0 (Angikaar, page 3):
+  - document: the original chunk text
+  - metadata: {'page': 3, 'source': 'Angikaar'}
+  - embedding: a single vector, 1536 numbers long
+- CONFIRMED (after initially misreading it): "vector length 1536"
+  means ONE chunk has ONE vector, and that vector is 1536 numbers
+  long — not "1536 different vectors." Every chunk in the entire
+  database has its own single vector, and every single one of
+  those vectors is 1536 numbers long, because they all came from
+  the same embedding model (text-embedding-3-small).
+- The truncated text and truncated numbers I saw in the terminal
+  ([:200] and [:5]) were just Python slicing for display — the
+  FULL chunk text and FULL 1536-number vector are what's really
+  stored underneath.
+- This exercise is what made the "coordinate in 1536-dimensional
+  space" analogy from section 2 click as something real, not
+  just theory — I could see actual numbers sitting in my own
+  database, not just read about the concept.
+
+  =====================================
+10. VOCABULARY MISMATCH + TABLE EXTRACTION WEAKNESS
+=====================================
+- Tested "age limit for PMKVY" -> failed even at n_results=12
+- Reworded to "age group for PMKVY" (matching document's own
+  wording) -> succeeded, but the correct chunk ranked 11th of 12
+  (barely inside the window)
+- Found the SAME fact existed in two chunks: a garbled table
+  (page 12: "Age Group 15-45 years 15-45 years 18-59 years",
+  no labels) and a clean sentence (page 33: "...age group of
+  15-45 years"). The table version NEVER surfaced in any test,
+  regardless of question phrasing. The clean sentence responded
+  well, but only to closely-matching wording.
+- Lesson: basic RAG has two real limitations here -
+  a) vocabulary mismatch between question and document wording
+     can hide correct answers even with a wide n_results
+  b) tables extracted by pypdf often become poor, unlabeled text
+     that embeds badly regardless of chunking strategy
+- Not fixed today (out of scope for v1). Real fixes for later:
+  hybrid search (keyword + vector combined), or query rewriting
+  (LLM rephrases the question into document-style wording before
+  retrieval). Good to know these exist and why, for interviews.
