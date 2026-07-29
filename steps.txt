@@ -1,6 +1,6 @@
 RAG PROJECT — PHASE 1, 2 & 3 WORKFLOW
 Indian Govt Schemes & Policy Assistant
-Last updated: 26 July 2026
+Last updated: 30 July 2026
 
 =====================================
 STEP 0: PROJECT SETUP (done)
@@ -135,6 +135,103 @@ Verified test cases:
 - FCRA registration conditions -> see lesson below
 
 =====================================
+STEP 6: STREAMLIT UI (done)
+=====================================
+Script: app.py
+
+What it does:
+- Imports ask() and retrieve_chunks() directly from ask.py —
+  no logic duplicated, Streamlit is purely a new interface on
+  top of the same tested backend
+- st.text_input() replaces the terminal input() loop
+- st.spinner() shows a loading state while the LLM call runs
+- st.expander("Example questions") gives new users a starting
+  point instead of a blank box
+- st.expander("View retrieved sources") shows the raw chunks
+  used for the answer — builds trust, lets anyone verify the
+  citation is real
+- Key concept: Streamlit reruns the ENTIRE script top to bottom
+  on every interaction. The "if question:" check exists so the
+  expensive LLM call only fires once the user has actually typed
+  something, not on every rerun.
+
+Setup issues hit + fixed:
+- Ran "python app.py" instead of "streamlit run app.py" — wrong
+  command, Streamlit apps need their own run command, not plain
+  python execution.
+- venv wasn't activated in a fresh terminal (no "(venv)" prefix
+  showing) -> streamlit command not found. Lesson repeated from
+  earlier: ALWAYS check for "(venv)" in the prompt before running
+  anything, especially in a new terminal tab.
+
+=====================================
+STEP 7: DEPLOYMENT PREP (done)
+=====================================
+Files created:
+- requirements.txt -> lists streamlit, openai, chromadb,
+  python-dotenv, pypdf so any environment can reinstall exactly
+  what this project needs
+- README.md -> project description, how it works, stack, run
+  instructions — this is what anyone sees first on GitHub
+
+.gitignore CONFUSION + FIX (worth remembering):
+- Every venv folder auto-generates its OWN internal .gitignore
+  (rag-govt-schemes/venv/.gitignore) the moment you run
+  "python -m venv venv". This is separate from and unrelated to
+  the project's own .gitignore.
+- Discovered the ROOT .gitignore (rag-govt-schemes/.gitignore)
+  was never actually created back in Step 0 — it had accidentally
+  ended up inside venv instead, likely because the terminal was
+  pointed at the wrong folder at that time.
+- Fix: created the missing root .gitignore with:
+  .env
+  venv/
+  __pycache__/
+- Verified using "git status" BEFORE committing anything — .env
+  must never appear in the list of files git wants to track.
+- Lesson: don't assume a setup step from days ago worked just
+  because no error appeared at the time. Verify directly when
+  something this important (API key safety) is on the line.
+
+DEPLOYMENT DATA DECISION:
+- chroma_db folder was deliberately NOT added to .gitignore and
+  WAS pushed to GitHub. For a small project (294 chunks) this is
+  the pragmatic choice — the deployed app needs the vector store
+  to actually answer questions, and rebuilding it on every deploy
+  isn't necessary at this scale.
+
+CODE CHANGE for deployment (app.py, top of file):
+  import os
+  import streamlit as st
+
+  if "OPENAI_API_KEY" in st.secrets:
+      os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+
+  from ask import ask, retrieve_chunks
+- Why this order matters: ask.py creates its OpenAI client the
+  moment it's imported, reading the API key from the environment.
+  So the environment variable must be set BEFORE the "from ask
+  import" line runs. Locally this if-block does nothing (no
+  st.secrets configured) so .env keeps working as before.
+
+=====================================
+STEP 8: GITHUB PUSH + STREAMLIT CLOUD DEPLOY (done)
+=====================================
+- git init, git add ., git commit, git push to a new GitHub repo
+- Verified on GitHub itself (not just locally):
+  - .env absent from repo (confirmed — key never leaked)
+  - chroma_db present and populated (confirmed — app has data)
+- Deployed on share.streamlit.io:
+  - connected GitHub repo, branch main, main file app.py
+  - added OPENAI_API_KEY under Advanced settings -> Secrets
+    (Streamlit Cloud's equivalent of a local .env file)
+- Live app tested with real questions -> working correctly,
+  matches local behavior exactly
+
+PROJECT STATUS: fully built, tested, debugged, deployed, and
+publicly accessible via a live URL as of 30 July 2026.
+
+=====================================
 PROBLEMS FACED + LESSONS LEARNED
 =====================================
 1. TYPOS (pydpdf, imprt) — small spelling errors crashed install
@@ -186,6 +283,33 @@ PROBLEMS FACED + LESSONS LEARNED
         pages will need per-claim citations — watch for this as
         questions get more complex (not an issue yet, just noted)
 
+6. VOCABULARY MISMATCH + TABLE EXTRACTION WEAKNESS (PMKVY age question)
+   - "age limit for PMKVY" failed even at n_results=12 — ruled out
+     ranking depth as the cause for THIS phrasing
+   - "age group for PMKVY" (matching document's own wording)
+     succeeded — but the correct chunk ranked 11th of 12, a very
+     thin margin
+   - Found the SAME fact in two chunks: a garbled table (page 12:
+     "Age Group 15-45 years 15-45 years 18-59 years", no labels)
+     and a clean sentence (page 33: "...age group of 15-45
+     years"). The table version NEVER surfaced in any test,
+     regardless of phrasing — the sentence version only worked
+     with matching wording.
+   - Lessons: basic RAG has two real limitations exposed here —
+     a) vocabulary mismatch between question and document wording
+        can hide correct answers even with a wide n_results
+     b) tables extracted by pypdf often become poor, unlabeled
+        text that embeds badly regardless of chunking strategy
+   - Not fixed (out of scope for v1). Real fixes for later: hybrid
+     search (keyword + vector combined), or query rewriting (LLM
+     rephrases the question into document-style wording before
+     retrieval). Good to know these exist and why, for interviews.
+
+7. .gitignore MIX-UP BEFORE DEPLOYMENT — see Step 7 above for
+   full details. Short version: root .gitignore was never created,
+   discovered only when checking before the GitHub push. Verified
+   and fixed before any risk of leaking the API key.
+
 =====================================
 MOTIVE / WHY THIS PROJECT
 =====================================
@@ -193,25 +317,24 @@ MOTIVE / WHY THIS PROJECT
   read. This system: ask in plain language -> answer with exact
   source + page cited. Verifiable, not hallucinated.
 - Personal: learn production-style RAG hands-on (ingestion,
-  embeddings, vector search, prompt design, debugging) as a
-  portfolio project for data science / AI roles.
+  embeddings, vector search, prompt design, debugging, deployment)
+  as a portfolio project for data science / AI roles.
 
 =====================================
 COST TRACKING (running total, rough)
 =====================================
 - Embedding 294 chunks: < $0.01
-- Testing/dev queries so far (~30-40 calls, mix of embedding +
-  gpt-4o-mini): well under $0.50
-- $10 OpenAI credit: effectively untouched, no action needed
+- Testing/dev queries across the whole project (~50-60 calls,
+  mix of embedding + gpt-4o-mini): well under $1
+- $10 OpenAI credit: still has plenty of headroom left
 
 =====================================
-NEXT: STREAMLIT UI (not started)
+NEXT (optional polish, not urgent)
 =====================================
-- app.py: wrap ask() in a simple Streamlit interface
-  - chat input box for the question
-  - display the answer
-  - expandable "Sources" section showing which chunks were used
-- Then: push to GitHub (clean structure, README, requirements.txt,
-  confirm .env is gitignored before pushing)
-- Deploy on Streamlit Community Cloud (free, gives public link)
-- LinkedIn post with working demo link
+- Add live demo URL to top of README.md
+- Final LinkedIn post: announce it's live, link the demo, recap
+  the debugging journey across the whole series
+- Longer-term ideas (not started): fix per-page chunking to be
+  continuous across page boundaries; try hybrid search (keyword
+  + vector) to fix the vocabulary-mismatch issue found during
+  PMKVY testing; add per-claim citations for multi-page answers
