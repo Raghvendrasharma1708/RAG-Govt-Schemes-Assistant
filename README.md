@@ -1,5 +1,7 @@
 # Indian Govt Schemes Assistant
 
+🔗 **Live demo:** [ https://rag-govt-schemes-assistant.streamlit.app/ ]
+
 A RAG-based Q&A system for Indian government scheme documents (PM-KISAN, Mudra Yojana, PMAY, FCRA, PMKVY, and more). Ask a question in plain language and get an answer with the exact source document and page number cited.
 
 ## How it works
